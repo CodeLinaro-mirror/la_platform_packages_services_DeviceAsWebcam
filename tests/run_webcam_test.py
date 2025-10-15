@@ -34,6 +34,7 @@ class DeviceAsWebcamTest(base_test.BaseTestClass):
   # TODO(373791776): Find a way to discover PreviewActivity for vendors that change
   # the webcam service.
   _DAC_PREVIEW_ACTIVITY = 'com.android.DeviceAsWebcam/com.android.deviceaswebcam.DeviceAsWebcamPreview'
+  _DAC_PREVIEW_ACTIVITY_LEGACY = 'com.android.DeviceAsWebcam/.DeviceAsWebcamPreview'
   _ACTIVITY_START_WAIT = 1.5  # seconds
   _ADB_RESTART_WAIT = 9  # seconds
   _FPS_TOLERANCE = 0.15 # 15 percent
@@ -179,9 +180,23 @@ class DeviceAsWebcamTest(base_test.BaseTestClass):
 
     # Enable the webcam service preview activity for a manual
     # check on webcam frames
-    cmd = f"""{adb} shell am start {self._DAC_PREVIEW_ACTIVITY}
-        --activity-no-history"""
-    self.run_cmd(cmd)
+    try:
+      cmd = f"""{adb} shell am start {self._DAC_PREVIEW_ACTIVITY}
+          --activity-no-history"""
+      self.run_cmd(cmd)
+      try_legacy_preview_activity = False
+    except subprocess.CalledProcessError:
+      logging.warning(
+          'Failed to start preview activity, trying legacy',
+          exc_info=True
+      )
+      try_legacy_preview_activity = True
+
+    if try_legacy_preview_activity:
+      cmd = f"""{adb} shell am start {self._DAC_PREVIEW_ACTIVITY_LEGACY}
+          --activity-no-history"""
+      self.run_cmd(cmd)
+
     time.sleep(self._MANUAL_FRAME_CHECK_DURATION)
 
     cmd = f"""{adb} shell am start {self._WEBCAM_TEST_ACTIVITY}
