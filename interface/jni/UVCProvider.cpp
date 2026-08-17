@@ -17,6 +17,7 @@
 //#define LOG_NDEBUG 0
 
 #include <jni.h>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <utility>
@@ -49,6 +50,31 @@ constexpr uint32_t FRAME_INTERVAL_NUM = 10'000'000;
 
 namespace android {
 namespace webcam {
+
+namespace {
+static constexpr char kUvcDriverName[] = "g_uvc";
+
+/**
+ * Validates that the queried V4L2 device capability matches the Linux UVC
+ * Gadget driver ("g_uvc") and supports V4L2_CAP_VIDEO_OUTPUT on either
+ * device_caps or physical capabilities.
+ */
+bool validateUvcCapability(const struct v4l2_capability& cap) {
+    uint32_t caps = (cap.capabilities & V4L2_CAP_DEVICE_CAPS) ?
+                    cap.device_caps : cap.capabilities;
+    if (!(caps & V4L2_CAP_VIDEO_OUTPUT)) {
+        ALOGV("%s: Device does not support VIDEO_OUTPUT (caps: 0x%x)", __FUNCTION__, caps);
+        return false;
+    }
+    if (strncmp(reinterpret_cast<const char*>(cap.driver), kUvcDriverName,
+                sizeof(cap.driver)) != 0) {
+        ALOGV("%s: Driver name '%.*s' does not match expected '%s'", __FUNCTION__,
+              static_cast<int>(sizeof(cap.driver)), cap.driver, kUvcDriverName);
+        return false;
+    }
+    return true;
+}
+} // anonymous namespace
 
 Status EpollW::init() {
     int fd = epoll_create1(EPOLL_CLOEXEC);
@@ -149,10 +175,13 @@ Status UVCProvider::UVCDevice::openV4L2DeviceAndSubscribe(const std::string& vid
         return Status::ERROR;
     }
 
-    // Check that it is indeed a video output device
-    if (!(cap.capabilities & V4L2_CAP_VIDEO_OUTPUT)) {
-        ALOGE("%s V4L2 device capabilities don't contain video output, caps:  %zu", __FUNCTION__,
-              (size_t)cap.capabilities);
+    if (!validateUvcCapability(cap)) {
+        uint32_t caps = (cap.capabilities & V4L2_CAP_DEVICE_CAPS) ?
+                        cap.device_caps : cap.capabilities;
+        ALOGE("%s V4L2 device %s is not a valid UVC output device "
+              "(driver: '%.*s', caps: 0x%x)",
+              __FUNCTION__, videoNode.c_str(),
+              static_cast<int>(sizeof(cap.driver)), cap.driver, caps);
         return Status::ERROR;
     }
 
@@ -174,7 +203,7 @@ Status UVCProvider::UVCDevice::openV4L2DeviceAndSubscribe(const std::string& vid
     return Status::OK;
 }
 
-static bool isVideoOutputDevice(const char* dev) {
+static bool isUvcDeviceNode(const char* dev) {
     base::unique_fd fd(open(dev, O_RDWR));
     if (fd.get() < 0) {
         ALOGW("%s Opening V4L2 node %s failed %s", __FUNCTION__, dev, strerror(errno));
@@ -188,11 +217,11 @@ static bool isVideoOutputDevice(const char* dev) {
         return false;
     }
 
-    if (capability.device_caps & V4L2_CAP_VIDEO_OUTPUT) {
-        ALOGI("%s device %s supports VIDEO_OUTPUT", __FUNCTION__, dev);
+    if (validateUvcCapability(capability)) {
+        ALOGI("%s device %s is a valid UVC output device", __FUNCTION__, dev);
         return true;
     }
-    ALOGV("%s device %s does not support VIDEO_OUTPUT", __FUNCTION__, dev);
+    ALOGV("%s device %s is not a valid UVC output device", __FUNCTION__, dev);
     return false;
 }
 
@@ -352,7 +381,7 @@ std::string UVCProvider::getVideoNode(const std::unordered_set<std::string>& ign
         // Skip if the node should be ignored
         if (ignoredNodes.find(node) != ignoredNodes.end()) { continue; }
 
-        if (isVideoOutputDevice(node)) {
+        if (isUvcDeviceNode(node)) {
             devNode = globRes.gl_pathv[i];
             break;
         }
